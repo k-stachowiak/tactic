@@ -1,2 +1,2 @@
-main : main.c
-	g++ -Wall -Wextra -Werror -g -o main main.c
+main : main.c Makefile
+	clang -Wall -Wextra -Werror -g -o main main.c

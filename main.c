@@ -7,12 +7,16 @@
 #include <termios.h>
 #include <unistd.h>
 
+#define ASTEROIDS_MIN 3
 #define ASTEROIDS_MAX 5 
-#define MAP_SIDE 20
-#define MAX_RANDOM_SEEKS (10 * MAP_SIDE * MAP_SIDE)
+#define ASTEROID_SIDE_MIN 3
+#define ASTEROID_SIDE_MAX 7
+#define MAP_WIDTH 40
+#define MAP_HEIGHT 20
+#define MAX_RANDOM_SEEKS (10 * MAP_WIDTH * MAP_HEIGHT)
 #define MAX_SCAN_LINE_SIZE ((int)(MAP_SIDE * 1.5))
 
-#if MAP_SIDE < 2
+#if MAP_WIDTH < 2 || MAP_HEIGHT < 2
 #	error Map side too small!
 #endif
 
@@ -20,7 +24,7 @@
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
 enum scan_field {
-	SF_UNSCANNED = 'X',
+	SF_UNSCANNED = '~',
 	SF_SPACE = ' ',
 	SF_FOG = '.',
 	SF_ASTEROID = '@',
@@ -30,17 +34,12 @@ enum scan_field {
 
 static struct {
 
-	struct {
-		int x1, y1, x2, y2;
-	} asteroids[ASTEROIDS_MAX];
+	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
 	int asteroids_count;
 
-	struct {
-		int x;
-		int y;
-	} player;
+	struct { int x, y; } player;
 
-	char map_buffer[MAP_SIDE * MAP_SIDE];
+	char map_buffer[MAP_WIDTH * MAP_HEIGHT];
 
 } data;
 
@@ -49,7 +48,7 @@ static struct {
  * ==========
  */
 
-int XENO_getch(void)
+static int XENO_getch(void)
 {
 	struct termios oldattr, newattr;
 	int ch;
@@ -62,29 +61,54 @@ int XENO_getch(void)
 	return ch;
 }
 
+static int XENO_rand_range (unsigned int min, unsigned int max)
+{
+	int base_random = rand(); /* in [0, RAND_MAX] */
+	int range = max - min;
+	int remainder = RAND_MAX % range;
+	int bucket = RAND_MAX / range;
+
+	/* Prevent max to ensure [0, RAND_MAX) */
+	if (RAND_MAX == base_random) {
+		return XENO_rand_range(min, max);
+	}
+
+	/* There are range buckets, plus one smaller interval within remainder of RAND_MAX */
+	if (base_random < RAND_MAX - remainder) {
+		return min + base_random/bucket;
+	} else {
+		return XENO_rand_range(min, max);
+	}
+}
+
 /*
  * Data related operations.
  * ========================
  */
 
-void data_init_asteroids(void)
+static void data_init_map(void)
 {
-	int i, x1, y1, x2, y2;
-	data.asteroids_count = rand() % ASTEROIDS_MAX;
+	memset(data.map_buffer, SF_UNSCANNED, sizeof(data.map_buffer));
+}
+
+static void data_init_asteroids(void)
+{
+	int i;
+	data.asteroids_count = XENO_rand_range(ASTEROIDS_MIN, ASTEROIDS_MAX);
 	printf("Generating %d asteroids.\n", data.asteroids_count);
 	for (i = 0; i < data.asteroids_count; ++i) {
-		x1 = rand() % MAP_SIDE;
-		y1 = rand() % MAP_SIDE;
-		x2 = rand() % MAP_SIDE;
-		y2 = rand() % MAP_SIDE;
-		data.asteroids[i].x1 = MIN(x1, x2);
-		data.asteroids[i].y1 = MIN(y1, y2);
-		data.asteroids[i].x2 = MAX(x1, x2);
-		data.asteroids[i].y2 = MAX(y1, y2);
+		int width = XENO_rand_range(ASTEROID_SIDE_MIN, ASTEROID_SIDE_MAX);
+		int height = XENO_rand_range(ASTEROID_SIDE_MIN, ASTEROID_SIDE_MAX);
+		int x = XENO_rand_range(0, MAP_WIDTH - width);
+		int y = XENO_rand_range(0, MAP_HEIGHT - height);
+		data.asteroids[i].x1 = x;
+		data.asteroids[i].y1 = y;
+		data.asteroids[i].x2 = x + width;
+		data.asteroids[i].y2 = y + height;
 	}
 }
 
-void data_init_player(void)
+static void data_init_player(void)
 {
 	int i, x, y;
 	bool found = false;
@@ -95,8 +119,8 @@ seek_fail:
 			fprintf(stderr, "ERROR: Failed finding place for player too many times.\n");
 			exit(1);
 		}
-		x = rand() % MAP_SIDE;
-		y = rand() % MAP_SIDE;
+		x = XENO_rand_range(0, MAP_WIDTH);
+		y = XENO_rand_range(0, MAP_HEIGHT);
 		for (i = 0; i < data.asteroids_count; ++i) {
 			if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
 				y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
@@ -111,8 +135,9 @@ seek_fail:
 	printf("Generating player at (%d, %d).\n", data.player.x, data.player.y);
 }
 
-void data_init(void)
+static void data_init(void)
 {
+	data_init_map();
 	data_init_asteroids();
 	data_init_player();
 }
@@ -122,7 +147,7 @@ void data_init(void)
  * ===========================
  */
 
-void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
+static void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 {
 	int dx, dy;
 	int i, max_i;
@@ -140,13 +165,25 @@ void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 	y = y1;
 
 	if (abs(dx) > abs(dy)) {
-		fdx = (x2 > x1) ? 1.0 : -1.0;
-		fdy = (double)dy / (double)dx;
-		max_i = abs(dx);
+		if (x2 > x1) {
+			fdx = 1.0;
+			fdy = (double)dy / (double)dx;
+			max_i = dx;
+		} else {
+			fdx = -1.0;
+			fdy = -((double)dy / (double)dx);
+			max_i = -dx;
+		}
 	} else {
-		fdx = (double)dx / (double)dy;
-		fdy = (y2 > y1) ? 1.0 : -1.0;
-		max_i = abs(dy);
+		if (y2 > y1) {
+			fdx = (double)dx / (double)dy;
+			fdy = 1.0;
+			max_i = dy;
+		} else {
+			fdx = -((double)dx / (double)dy);
+			fdy = -1.0;
+			max_i = -dy;
+		}
 	}
 
 	for (i = 0; i <= max_i; ++i) {
@@ -158,7 +195,7 @@ void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 	}
 }
 
-bool tactical_scan(int x, int y)
+static bool tactical_scan(int x, int y)
 {
 	int i;
 
@@ -166,13 +203,13 @@ bool tactical_scan(int x, int y)
 	for (i = 0; i < data.asteroids_count; ++i) {
 		if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
 		    y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
-			data.map_buffer[y * MAP_SIDE + x] = SF_ASTEROID;
+			data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
 			return false;
 		}
 	}
 
 	// No collision, mark empty space.
-	data.map_buffer[y * MAP_SIDE + x] = SF_SPACE;
+	data.map_buffer[y * MAP_WIDTH + x] = SF_SPACE;
 	return true;
 }
 
@@ -181,32 +218,44 @@ bool tactical_scan(int x, int y)
  * ====================
  */
 
-void plot_asteroids(void)
+static void plot_fog(void)
 {
-	int i, x, y;
-	for (i = 0; i < data.asteroids_count; ++i) {
-		for (x = data.asteroids[i].x1; x <= data.asteroids[i].x2; ++x) {
-			for (y = data.asteroids[i].y1; y <= data.asteroids[i].y2; ++y) {
-				data.map_buffer[y * MAP_SIDE + x] = SF_ASTEROID;
-			}
+	int i;
+	for (i = 0; i < MAP_WIDTH * MAP_HEIGHT; ++i) {
+		if (data.map_buffer[i] == SF_SPACE || data.map_buffer[i] == SF_PLAYER) {
+			data.map_buffer[i] = SF_FOG;
 		}
 	}
 }
 
-void plot_map(void)
+static void plot_asteroids(void)
+{
+	/*
+	int i, x, y;
+	for (i = 0; i < data.asteroids_count; ++i) {
+		for (x = data.asteroids[i].x1; x <= data.asteroids[i].x2; ++x) {
+			for (y = data.asteroids[i].y1; y <= data.asteroids[i].y2; ++y) {
+				data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
+			}
+		}
+	}
+	//*/
+}
+
+static void plot_map(void)
 {
 	int x, y;
-	for (x = 0; x < MAP_SIDE; ++x) {
-		generic_scan(data.player.x, data.player.y, x, 0, tactical_scan);
-		generic_scan(data.player.x, data.player.y, x, MAP_SIDE - 1, tactical_scan);
+	
+	plot_fog();
+	plot_asteroids();
+
+	for (x = 0; x < MAP_WIDTH; ++x) {
+		for (y = 0; y < MAP_HEIGHT; ++y) {
+			generic_scan(data.player.x, data.player.y, x, y, tactical_scan);
+		}
 	}
 
-	for (y = 1; y < (MAP_SIDE - 1); ++y) {
-		generic_scan(data.player.x, data.player.y, 0, y, tactical_scan);
-		generic_scan(data.player.x, data.player.y, MAP_SIDE - 1, y, tactical_scan);
-	}
-
-	data.map_buffer[data.player.y * MAP_SIDE + data.player.x] = SF_PLAYER;
+	data.map_buffer[data.player.y * MAP_WIDTH + data.player.x] = SF_PLAYER;
 }
 
 /*
@@ -214,23 +263,22 @@ void plot_map(void)
  * ===================
  */
 
-void print_welcome(void)
+static void print_welcome(void)
 {
 	printf("Welcome to the Space Tactical Battle!\n");
 }
 
-void print_status(void)
+static void print_status(void)
 {
 	int i;
-	memset(data.map_buffer, SF_UNSCANNED, sizeof(data.map_buffer));
 
 	printf("Tactical status:\n\n");
 	printf("Map:\n");
-	// plot_asteroids();
+
 	plot_map();
 
-	for (i = 0; i < MAP_SIDE; ++i) {
-		printf("%.*s\n", MAP_SIDE, data.map_buffer + (i * MAP_SIDE));
+	for (i = 0; i < MAP_HEIGHT; ++i) {
+		printf("%.*s\n", MAP_WIDTH, data.map_buffer + (i * MAP_WIDTH));
 	}
 }
 
@@ -239,7 +287,7 @@ void print_status(void)
  * ============
  */
 
-void game_loop(void)
+static void game_loop(void)
 {
 	int c = 0;
 
