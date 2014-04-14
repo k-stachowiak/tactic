@@ -7,14 +7,16 @@
 #include <termios.h>
 #include <unistd.h>
 
-#define ASTEROIDS_MIN 3
-#define ASTEROIDS_MAX 5 
-#define ASTEROID_SIDE_MIN 3
-#define ASTEROID_SIDE_MAX 7
 #define MAP_WIDTH 40
 #define MAP_HEIGHT 20
 #define MAX_RANDOM_SEEKS (10 * MAP_WIDTH * MAP_HEIGHT)
 #define MAX_SCAN_LINE_SIZE ((int)(MAP_SIDE * 1.5))
+#define ASTEROIDS_MIN 3
+#define ASTEROIDS_MAX 5 
+#define ASTEROID_SIDE_MIN 3
+#define ASTEROID_SIDE_MAX 7
+#define ENEMIES_MIN 3
+#define ENEMIES_MAX 5
 
 #if MAP_WIDTH < 2 || MAP_HEIGHT < 2
 #	error Map side too small!
@@ -36,6 +38,9 @@ static struct {
 
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
 	int asteroids_count;
+
+	struct { int x, y; } enemies[ENEMIES_MAX];
+	int enemies_count;
 
 	struct { int x, y; } player;
 
@@ -61,7 +66,7 @@ static int XENO_getch(void)
 	return ch;
 }
 
-static int XENO_rand_range (unsigned int min, unsigned int max)
+static int XENO_rand_range(unsigned int min, unsigned int max)
 {
 	int base_random = rand(); /* in [0, RAND_MAX] */
 	int range = max - min;
@@ -86,6 +91,39 @@ static int XENO_rand_range (unsigned int min, unsigned int max)
  * ========================
  */
 
+static bool data_find_empty_field(int max_seeks, int *out_x, int *out_y)
+{
+	int i, x, y;
+	bool found = false;
+	int seeks = 0;
+	while (!found) {
+seek_fail:
+		if (++seeks > max_seeks) {
+			return false;
+		}
+		x = XENO_rand_range(0, MAP_WIDTH);
+		y = XENO_rand_range(0, MAP_HEIGHT);
+		for (i = 0; i < data.asteroids_count; ++i) {
+			if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
+				y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
+				found = false;
+				goto seek_fail;
+			}
+		}
+		for (i = 0; i < data.enemies_count; ++i) {
+			if (x == data.enemies[i].x && y == data.enemies[i].y) {
+				found = false;
+				goto seek_fail;
+			}
+		}
+		found = true;
+	}
+	*out_x = x;
+	*out_y = y;
+	return true;
+}
+
+
 static void data_init_map(void)
 {
 	memset(data.map_buffer, SF_UNSCANNED, sizeof(data.map_buffer));
@@ -108,37 +146,42 @@ static void data_init_asteroids(void)
 	}
 }
 
-static void data_init_player(void)
+static void data_init_enemies(void)
 {
-	int i, x, y;
-	bool found = false;
-	int seeks = 0;
-	while (!found) {
-seek_fail:
-		if (++seeks > MAX_RANDOM_SEEKS) {
-			fprintf(stderr, "ERROR: Failed finding place for player too many times.\n");
+	int i;
+	int new_count = XENO_rand_range(ENEMIES_MIN, ENEMIES_MAX);
+	for (i = 0; i < new_count; ++i) {
+		if (!data_find_empty_field(
+				MAX_RANDOM_SEEKS,
+				&(data.enemies[i].x),
+				&(data.enemies[i].y))) {
+			fprintf(stderr, "ERROR: Failed finding random free field too many times.\n");
 			exit(1);
 		}
-		x = XENO_rand_range(0, MAP_WIDTH);
-		y = XENO_rand_range(0, MAP_HEIGHT);
-		for (i = 0; i < data.asteroids_count; ++i) {
-			if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
-				y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
-				found = false;
-				goto seek_fail;
-			}
-		}
-		found = true;
+		++(data.enemies_count);
 	}
-	data.player.x = x;
-	data.player.y = y;
+}
+
+static void data_init_player(void)
+{
+	if (!data_find_empty_field(
+			MAX_RANDOM_SEEKS,
+			&(data.player.x),
+			&(data.player.y))) {
+		fprintf(stderr, "ERROR: Failed finding random free field too many times.\n");
+		exit(1);
+	}
 	printf("Generating player at (%d, %d).\n", data.player.x, data.player.y);
 }
 
 static void data_init(void)
 {
+	data.asteroids_count = 0;
+	data.enemies_count = 0;
+
 	data_init_map();
 	data_init_asteroids();
+	data_init_enemies();
 	data_init_player();
 }
 
@@ -214,6 +257,14 @@ static bool tactical_scan(int x, int y)
 		}
 	}
 
+	// Check enemy collision.
+	for (i = 0; i < data.enemies_count; ++i) {
+		if (x == data.enemies[i].x && y == data.enemies[i].y) {
+			data.map_buffer[y * MAP_WIDTH + x] = SF_ENEMY;
+			return false;
+		}
+	}
+
 	// No collision, mark empty space.
 	data.map_buffer[y * MAP_WIDTH + x] = SF_SPACE;
 	return true;
@@ -228,7 +279,10 @@ static void plot_fog(void)
 {
 	int i;
 	for (i = 0; i < MAP_WIDTH * MAP_HEIGHT; ++i) {
-		if (data.map_buffer[i] == SF_SPACE || data.map_buffer[i] == SF_PLAYER) {
+		if (data.map_buffer[i] == SF_SPACE ||
+			data.map_buffer[i] == SF_PLAYER ||
+			data.map_buffer[i] == SF_ENEMY) {
+
 			data.map_buffer[i] = SF_FOG;
 		}
 	}
