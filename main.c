@@ -29,9 +29,8 @@ enum scan_field {
 	SF_UNSCANNED = '~',
 	SF_SPACE = ' ',
 	SF_FOG = '.',
-	SF_ASTEROID = '@',
-	SF_PLAYER = '*',
-	SF_ENEMY = '$'
+	SF_ASTEROID = '#',
+	SF_PLAYER = '*'
 };
 
 static struct {
@@ -68,17 +67,15 @@ static int XENO_getch(void)
 
 static int XENO_rand_range(unsigned int min, unsigned int max)
 {
-	int base_random = rand(); /* in [0, RAND_MAX] */
+	int base_random = rand();
 	int range = max - min;
 	int remainder = RAND_MAX % range;
 	int bucket = RAND_MAX / range;
 
-	/* Prevent max to ensure [0, RAND_MAX) */
 	if (RAND_MAX == base_random) {
 		return XENO_rand_range(min, max);
 	}
 
-	/* There are range buckets, plus one smaller interval within remainder of RAND_MAX */
 	if (base_random < RAND_MAX - remainder) {
 		return min + base_random/bucket;
 	} else {
@@ -190,18 +187,18 @@ static void data_init(void)
  * ===========================
  */
 
-static void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
+static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 {
 	int dx, dy;
 	int i, max_i;
 	double x, y, fdx, fdy;
+	int scan_result;
 
 	dx = x2 - x1;
 	dy = y2 - y1;
 
 	if (dx == 0 && dy == 0) {
-		func(x1, y1);
-		return;
+		return func(x1, y1);
 	}
 
 	x = x1;
@@ -230,8 +227,8 @@ static void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 	}
 
 	for (i = 0; i <= max_i; ++i) {
-		if (!func(x, y)) {
-			return;
+		if ((scan_result = func(x, y)) != 0) {
+			return scan_result;
 		}
 		x += fdx;
 		y += fdy;
@@ -241,33 +238,52 @@ static void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 	 * If for the precission reasons the target is
 	 * not reached let's enforce its scan here.
 	 */
-	func(x2, y2);
+	return func(x2, y2);
 }
 
-static bool tactical_scan(int x, int y)
+static int tactical_scan(int x, int y)
 {
 	int i;
 
-	// Check asteroids collision.
 	for (i = 0; i < data.asteroids_count; ++i) {
 		if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
 		    y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
 			data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
-			return false;
+			return 1;
 		}
 	}
 
-	// Check enemy collision.
 	for (i = 0; i < data.enemies_count; ++i) {
 		if (x == data.enemies[i].x && y == data.enemies[i].y) {
-			data.map_buffer[y * MAP_WIDTH + x] = SF_ENEMY;
-			return false;
+			data.map_buffer[y * MAP_WIDTH + x] = '0' + i;
+			return 1;
 		}
 	}
 
-	// No collision, mark empty space.
 	data.map_buffer[y * MAP_WIDTH + x] = SF_SPACE;
-	return true;
+	return 0;
+}
+
+static int attack_scan(int x, int y)
+{
+	int i;
+
+	for (i = 0; i < data.asteroids_count; ++i) {
+		if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
+		    y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
+			data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
+			return -1;
+		}
+	}
+
+	for (i = 0; i < data.enemies_count; ++i) {
+		if (x == data.enemies[i].x && y == data.enemies[i].y) {
+			data.map_buffer[y * MAP_WIDTH + x] = '0' + i;
+			return i;
+		}
+	}
+
+	return 0;
 }
 
 /*
@@ -281,40 +297,21 @@ static void plot_fog(void)
 	for (i = 0; i < MAP_WIDTH * MAP_HEIGHT; ++i) {
 		if (data.map_buffer[i] == SF_SPACE ||
 			data.map_buffer[i] == SF_PLAYER ||
-			data.map_buffer[i] == SF_ENEMY) {
+			(data.map_buffer[i] >= '0' && data.map_buffer[i] <= '9')) {
 
 			data.map_buffer[i] = SF_FOG;
 		}
 	}
 }
 
-static void plot_asteroids(void)
-{
-	/*
-	int i, x, y;
-	for (i = 0; i < data.asteroids_count; ++i) {
-		for (x = data.asteroids[i].x1; x <= data.asteroids[i].x2; ++x) {
-			for (y = data.asteroids[i].y1; y <= data.asteroids[i].y2; ++y) {
-				data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
-			}
-		}
-	}
-	//*/
-}
-
 static void plot_map(void)
 {
 	int x, y;
-	
-	plot_fog();
-	plot_asteroids();
-
 	for (x = 0; x < MAP_WIDTH; ++x) {
 		for (y = 0; y < MAP_HEIGHT; ++y) {
 			generic_scan(data.player.x, data.player.y, x, y, tactical_scan);
 		}
 	}
-
 	data.map_buffer[data.player.y * MAP_WIDTH + data.player.x] = SF_PLAYER;
 }
 
@@ -335,6 +332,8 @@ static void print_status(void)
 	printf("Tactical status:\n\n");
 	printf("Map:\n");
 
+	plot_fog();
+	plot_asteroids();
 	plot_map();
 
 	for (i = 0; i < MAP_HEIGHT; ++i) {
@@ -354,7 +353,8 @@ static bool game_move_player(int dx, int dy)
 
 	int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
 
-	bool obstacle = new_field == SF_ASTEROID || new_field == SF_ENEMY;
+	bool obstacle = new_field == SF_ASTEROID ||
+					(new_field >= '0' && new_field <= '9');
 	bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
 				   new_y < 0 || new_y >= MAP_HEIGHT;
 
@@ -363,6 +363,47 @@ static bool game_move_player(int dx, int dy)
 	} else {
 		data.player.x = new_x;
 		data.player.y = new_y;
+		return true;
+	}
+}
+
+static bool game_fire_laser(void)
+{
+	int scan_result = 0;
+	int target = - 1, hit = -1;
+	int x, y;
+
+	while (scan_result != 1) {
+		printf("Fire laser, select target [0-%d] (-1 to cancel): ", data.enemies_count - 1);
+		scan_result = scanf("%d", &target);
+		printf("\n");
+		if (target == -1) {
+			printf("Aborting attack.\n");
+			return false;
+		}
+		if (target < 0 || target >= data.enemies_count) {
+			scan_result = 0;
+		}
+	} 
+
+	x = data.enemies[target].x;
+	y = data.enemies[target].y;
+
+	hit = generic_scan(
+			data.player.x,
+			data.player.y,
+			x,
+			y,
+			attack_scan);
+
+	if (hit == -1) {
+		printf("Obstacle hit.\n");
+		return false;
+	} else if (hit == target) {
+		printf("Target hit.\n");
+		return true;
+	} else {
+		printf("Another one hit.\n");
 		return true;
 	}
 }
@@ -386,6 +427,9 @@ static void game_loop(void)
 		case 'l':
 			game_move_player(1, 0);
 			break;
+		case 'L':
+			game_fire_laser();
+			break;
 		default:
 			break;
 		}
@@ -401,5 +445,6 @@ int main()
 	data_init();
 	print_welcome();
 	game_loop();
+
 	return 0;
 }
