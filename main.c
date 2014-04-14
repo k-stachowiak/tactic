@@ -193,6 +193,12 @@ static void generic_scan(int x1, int y1, int x2, int y2, bool (*func)(int, int))
 		x += fdx;
 		y += fdy;
 	}
+
+	/* 
+	 * If for the precission reasons the target is
+	 * not reached let's enforce its scan here.
+	 */
+	func(x2, y2);
 }
 
 static bool tactical_scan(int x, int y)
@@ -287,6 +293,26 @@ static void print_status(void)
  * ============
  */
 
+static bool game_move_player(int dx, int dy)
+{
+	int new_x = data.player.x + dx;
+	int new_y = data.player.y + dy;
+
+	int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
+
+	bool obstacle = new_field == SF_ASTEROID || new_field == SF_ENEMY;
+	bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
+				   new_y < 0 || new_y >= MAP_HEIGHT;
+
+	if (obstacle || outside) {
+		return false;
+	} else {
+		data.player.x = new_x;
+		data.player.y = new_y;
+		return true;
+	}
+}
+
 static void game_loop(void)
 {
 	int c = 0;
@@ -295,16 +321,16 @@ static void game_loop(void)
 	while ((c = XENO_getch()) != 'q') {
 		switch (c) {
 		case 'h':
-			data.player.x -= 1;
+			game_move_player(-1, 0);
 			break;
 		case 'j':
-			data.player.y += 1;
+			game_move_player(0, 1);
 			break;
 		case 'k':
-			data.player.y -= 1;
+			game_move_player(0, -1);
 			break;
 		case 'l':
-			data.player.x += 1;
+			game_move_player(1, 0);
 			break;
 		default:
 			break;
