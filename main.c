@@ -25,6 +25,15 @@
 #define MIN(x, y) ((x) < (y) ? (x) : (y))
 #define MAX(x, y) ((x) > (y) ? (x) : (y))
 
+#define PRINT_HR(MACRO_width)\
+	do {\
+		int MACRO_i;\
+		for (MACRO_i = 0; MACRO_i < (MACRO_width); ++MACRO_i) {\
+			printf("=");\
+		}\
+		printf("\n");\
+	} while(0)
+
 enum scan_field {
 	SF_UNSCANNED = '~',
 	SF_SPACE = ' ',
@@ -201,8 +210,8 @@ static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 		return func(x1, y1);
 	}
 
-	x = x1;
-	y = y1;
+	x = (double)x1 + 0.5;
+	y = (double)y1 + 0.5;
 
 	if (abs(dx) > abs(dy)) {
 		if (x2 > x1) {
@@ -329,16 +338,21 @@ static void print_status(void)
 {
 	int i;
 
-	printf("Tactical status:\n\n");
-	printf("Map:\n");
+	printf("Tactical status:\n");
+	printf("\n");
+
+	printf("Aseroids: %d\n", data.asteroids_count);
+	printf("Enemies : %d\n", data.enemies_count);
+	printf("\n");
 
 	plot_fog();
-	plot_asteroids();
 	plot_map();
 
+	PRINT_HR(MAP_WIDTH);
 	for (i = 0; i < MAP_HEIGHT; ++i) {
 		printf("%.*s\n", MAP_WIDTH, data.map_buffer + (i * MAP_WIDTH));
 	}
+	PRINT_HR(MAP_WIDTH);
 }
 
 /*
