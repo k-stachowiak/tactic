@@ -42,6 +42,12 @@ enum scan_field {
 	SF_PLAYER = '*'
 };
 
+enum move_result {
+	MR_CLEAR,
+	MR_BLOCK,
+	MR_SHIP
+};
+
 static struct {
 
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
@@ -97,6 +103,12 @@ static int XENO_rand_range(unsigned int min, unsigned int max)
  * ========================
  */
 
+/** @brief Finds a random field that is not occupied.
+  * @param[in] max_seeks The maximum number of acceptable fails.
+  * @param[out] out_x The x coordinate of the found point.
+  * @param[out] out_y The y coordinate of the found point.
+  * @return True if seek was successfull, false otherwise.
+  */
 static bool data_find_empty_field(int max_seeks, int *out_x, int *out_y)
 {
 	int i, x, y;
@@ -129,7 +141,6 @@ seek_fail:
 	return true;
 }
 
-
 static void data_init_map(void)
 {
 	memset(data.map_buffer, SF_UNSCANNED, sizeof(data.map_buffer));
@@ -155,6 +166,7 @@ static void data_init_asteroids(void)
 static void data_init_enemies(void)
 {
 	int i;
+	data.enemies_count = 0;
 	int new_count = XENO_rand_range(ENEMIES_MIN, ENEMIES_MAX);
 	for (i = 0; i < new_count; ++i) {
 		if (!data_find_empty_field(
@@ -182,9 +194,6 @@ static void data_init_player(void)
 
 static void data_init(void)
 {
-	data.asteroids_count = 0;
-	data.enemies_count = 0;
-
 	data_init_map();
 	data_init_asteroids();
 	data_init_enemies();
@@ -196,6 +205,17 @@ static void data_init(void)
  * ===========================
  */
 
+/** @brief Scans a line between two points, calling a callback function
+  *        for each point along the scan line. If the callback returns
+  *        a non-zero value, the scan is stopped and the value is returned.
+  * @param x1 The x coordinate of the start point.
+  * @param y1 The y coordinate of the start point.
+  * @param x2 The x coordinate of the end point.
+  * @param y2 The y coordinate of the end point.
+  * @param func The callback function.
+  * @return 0 if scan was performed without interruption, the hit value
+  *         if the scan was interrupted.
+  */
 static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 {
 	int dx, dy;
@@ -243,13 +263,14 @@ static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 		y += fdy;
 	}
 
-	/* 
-	 * If for the precission reasons the target is
-	 * not reached let's enforce its scan here.
-	 */
-	return func(x2, y2);
+	return 0;
 }
 
+/** @brief Callback function for a tactical scan.
+  * @param x The x coordinate of the scanned point.
+  * @param y The y coordinate of the scanned point.
+  * @return 0 in nothing was detected, 1 if an obstacle was hit.
+  */
 static int tactical_scan(int x, int y)
 {
 	int i;
@@ -273,6 +294,13 @@ static int tactical_scan(int x, int y)
 	return 0;
 }
 
+/** @brief Callback for an attack scan.
+  * @param x The x coordinate of the scanned point.
+  * @param y The y coordinate of the scanned point.
+  * @return 0 if nothing was hit,
+  *         -1 if asteroid was hit,
+  *         index of enemy if an enemy was hit.
+  */
 static int attack_scan(int x, int y)
 {
 	int i;
@@ -334,6 +362,26 @@ static void print_welcome(void)
 	printf("Welcome to the Space Tactical Battle!\n");
 }
 
+static int print_laser_prompt(void)
+{
+	int scan_result = 0;
+	int target = -1;
+
+	while (scan_result != 1) {
+		printf("Fire laser, select target [0-%d] (negative value to cancel): ", data.enemies_count - 1);
+		scan_result = scanf("%d", &target);
+		printf("\n");
+		if (target < 0) {
+			return -1;
+		}
+		if (target < 0 || target >= data.enemies_count) {
+			scan_result = 0;
+		}
+	} 
+
+	return target;
+}
+
 static void print_status(void)
 {
 	int i;
@@ -360,96 +408,114 @@ static void print_status(void)
  * ============
  */
 
-static bool game_move_player(int dx, int dy)
+static enum move_result game_move_player(int dx, int dy)
 {
 	int new_x = data.player.x + dx;
 	int new_y = data.player.y + dy;
 
 	int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
 
-	bool obstacle = new_field == SF_ASTEROID ||
-					(new_field >= '0' && new_field <= '9');
+	bool obstacle = new_field == SF_ASTEROID;
+	bool enemy = (new_field >= '0' && new_field <= '9');
 	bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
 				   new_y < 0 || new_y >= MAP_HEIGHT;
 
 	if (obstacle || outside) {
-		return false;
+		return MR_BLOCK;
+	} else if (enemy) {
+		return MR_SHIP;
 	} else {
 		data.player.x = new_x;
 		data.player.y = new_y;
-		return true;
+		return MR_CLEAR;
 	}
+}
+
+static void game_hit_enemy(int index)
+{
+	data.enemies[index] = data.enemies[data.enemies_count - 1];
+	--data.enemies_count;
 }
 
 static bool game_fire_laser(void)
 {
-	int scan_result = 0;
 	int target = - 1, hit = -1;
 	int x, y;
 
-	while (scan_result != 1) {
-		printf("Fire laser, select target [0-%d] (-1 to cancel): ", data.enemies_count - 1);
-		scan_result = scanf("%d", &target);
-		printf("\n");
-		if (target == -1) {
-			printf("Aborting attack.\n");
-			return false;
-		}
-		if (target < 0 || target >= data.enemies_count) {
-			scan_result = 0;
-		}
-	} 
+	if (data.enemies_count == 0) {
+		printf("No enemies to target.\n");
+		return false;
+	}
+	
+	if ((target = print_laser_prompt()) == -1) {
+		printf("Aborting attack.\n");
+		return false;
+	}
 
 	x = data.enemies[target].x;
 	y = data.enemies[target].y;
-
-	hit = generic_scan(
-			data.player.x,
-			data.player.y,
-			x,
-			y,
-			attack_scan);
+	hit = generic_scan(data.player.x, data.player.y, x, y, attack_scan);
 
 	if (hit == -1) {
 		printf("Obstacle hit.\n");
 		return false;
 	} else if (hit == target) {
 		printf("Target hit.\n");
+		game_hit_enemy(hit);
 		return true;
 	} else {
 		printf("Another one hit.\n");
+		game_hit_enemy(hit);
 		return true;
 	}
+}
+
+static void game_enemy_turn(void)
+{
 }
 
 static void game_loop(void)
 {
 	int c = 0;
+	enum move_result mr;
+	bool fr;
 
 	print_status();
 	while ((c = XENO_getch()) != 'q') {
 		switch (c) {
 		case 'h':
-			game_move_player(-1, 0);
+			mr = game_move_player(-1, 0);
 			break;
 		case 'j':
-			game_move_player(0, 1);
+			mr = game_move_player(0, 1);
 			break;
 		case 'k':
-			game_move_player(0, -1);
+			mr = game_move_player(0, -1);
 			break;
 		case 'l':
-			game_move_player(1, 0);
+			mr = game_move_player(1, 0);
 			break;
 		case 'L':
-			game_fire_laser();
+			fr = game_fire_laser();
 			break;
 		default:
 			break;
 		}
+
+		game_enemy_turn();
+
+		if (data.enemies_count == 0) {
+			printf("You are awesome!\n");
+			break;
+		}
+
+		if (mr == MR_SHIP) {
+			printf("You failed!\n");
+			break;
+		}
+
 		print_status();
 	}
-
 }
 
 int main()
