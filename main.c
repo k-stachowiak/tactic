@@ -48,6 +48,8 @@ enum move_result {
 	MR_SHIP
 };
 
+// Additional content to enforce commit.
+
 static struct {
 
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
