@@ -299,7 +299,7 @@ static int tactical_scan(int x, int y)
   * @param y The y coordinate of the scanned point.
   * @return 0 if nothing was hit,
   *         -1 if asteroid was hit,
-  *         index of enemy if an enemy was hit.
+  *         index of enemy + 1 if an enemy was hit.
   */
 static int attack_scan(int x, int y)
 {
@@ -316,7 +316,7 @@ static int attack_scan(int x, int y)
 	for (i = 0; i < data.enemies_count; ++i) {
 		if (x == data.enemies[i].x && y == data.enemies[i].y) {
 			data.map_buffer[y * MAP_WIDTH + x] = '0' + i;
-			return i;
+			return i + 1; // Solve case when enemy 0 hit
 		}
 	}
 
@@ -456,16 +456,22 @@ static bool game_fire_laser(void)
 	y = data.enemies[target].y;
 	hit = generic_scan(data.player.x, data.player.y, x, y, attack_scan);
 
-	if (hit == -1) {
+    if (hit == 0) {
+        printf("Nothing hit.\n");
+        return false;
+
+    } else if (hit == -1) {
 		printf("Obstacle hit.\n");
 		return false;
-	} else if (hit == target) {
+
+	} else if ((hit - 1) == target) {
 		printf("Target hit.\n");
-		game_hit_enemy(hit);
+		game_hit_enemy(hit - 1);
 		return true;
+
 	} else {
 		printf("Another one hit.\n");
-		game_hit_enemy(hit);
+		game_hit_enemy(hit - 1);
 		return true;
 	}
 }
