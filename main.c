@@ -305,6 +305,7 @@ static int tactical_scan(int x, int y)
   */
 static int attack_scan(int x, int y)
 {
+TODO: Fix this - 0 is also an index of an enemy!
 	int i;
 
 	for (i = 0; i < data.asteroids_count; ++i) {
