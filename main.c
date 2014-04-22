@@ -18,6 +18,9 @@
 #define ENEMIES_MIN 3
 #define ENEMIES_MAX 5
 
+#define FAKE_PLAYER_INDEX 999
+#define FAKE_ASTEROID_INDEX -1
+
 #if MAP_WIDTH < 2 || MAP_HEIGHT < 2
 #	error Map side too small!
 #endif
@@ -48,6 +51,11 @@ enum move_result {
 	MR_SHIP
 };
 
+enum enemy_behavior {
+	EB_IDLE,
+	EB_HUNT
+};
+
 // Additional content to enforce commit.
 
 static struct {
@@ -55,10 +63,16 @@ static struct {
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
 	int asteroids_count;
 
-	struct { int x, y; } enemies[ENEMIES_MAX];
+	struct {
+		int x, y;
+		enum enemy_behavior behavior;
+	} enemies[ENEMIES_MAX];
 	int enemies_count;
 
-	struct { int x, y; } player;
+	struct {
+		int x, y;
+		double health;
+	} player;
 
 	char map_buffer[MAP_WIDTH * MAP_HEIGHT];
 
@@ -82,7 +96,7 @@ static int XENO_getch(void)
 	return ch;
 }
 
-static int XENO_rand_range(unsigned int min, unsigned int max)
+static int XENO_rand_range(unsigned min, unsigned max)
 {
 	int base_random = rand();
 	int range = max - min;
@@ -178,12 +192,14 @@ static void data_init_enemies(void)
 			fprintf(stderr, "ERROR: Failed finding random free field too many times.\n");
 			exit(1);
 		}
+		data.enemies[i].behavior = EB_IDLE;
 		++(data.enemies_count);
 	}
 }
 
 static void data_init_player(void)
 {
+	data.player.health = 100.0;
 	if (!data_find_empty_field(
 			MAX_RANDOM_SEEKS,
 			&(data.player.x),
@@ -257,7 +273,11 @@ static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 		}
 	}
 
-	for (i = 0; i <= max_i; ++i) {
+	// Skip source field.
+	x += fdx;
+	y += fdy;
+
+	for (i = 1; i <= max_i; ++i) {
 		if ((scan_result = func(x, y)) != 0) {
 			return scan_result;
 		}
@@ -268,12 +288,12 @@ static int generic_scan(int x1, int y1, int x2, int y2, int(*func)(int, int))
 	return 0;
 }
 
-/** @brief Callback function for a tactical scan.
+/** @brief Callback function for a map plotting scan.
   * @param x The x coordinate of the scanned point.
   * @param y The y coordinate of the scanned point.
   * @return 0 in nothing was detected, 1 if an obstacle was hit.
   */
-static int tactical_scan(int x, int y)
+static int plot_scan(int x, int y)
 {
 	int i;
 
@@ -296,31 +316,32 @@ static int tactical_scan(int x, int y)
 	return 0;
 }
 
-/** @brief Callback for an attack scan.
+/** @brief Callback for the visibility scan.
   * @param x The x coordinate of the scanned point.
   * @param y The y coordinate of the scanned point.
   * @return 0 if nothing was hit,
   *         -1 if asteroid was hit,
   *         index of enemy + 1 if an enemy was hit.
   */
-static int attack_scan(int x, int y)
+static int visibility_scan(int x, int y)
 {
-TODO: Fix this - 0 is also an index of an enemy!
 	int i;
 
 	for (i = 0; i < data.asteroids_count; ++i) {
 		if (x >= data.asteroids[i].x1 && x <= data.asteroids[i].x2 &&
 		    y >= data.asteroids[i].y1 && y <= data.asteroids[i].y2) {
-			data.map_buffer[y * MAP_WIDTH + x] = SF_ASTEROID;
-			return -1;
+			return FAKE_ASTEROID_INDEX;
 		}
 	}
 
 	for (i = 0; i < data.enemies_count; ++i) {
 		if (x == data.enemies[i].x && y == data.enemies[i].y) {
-			data.map_buffer[y * MAP_WIDTH + x] = '0' + i;
 			return i + 1; // Solve case when enemy 0 hit
 		}
+	}
+
+	if (x == data.player.x && y == data.player.y) {
+		return FAKE_PLAYER_INDEX;
 	}
 
 	return 0;
@@ -349,7 +370,7 @@ static void plot_map(void)
 	int x, y;
 	for (x = 0; x < MAP_WIDTH; ++x) {
 		for (y = 0; y < MAP_HEIGHT; ++y) {
-			generic_scan(data.player.x, data.player.y, x, y, tactical_scan);
+			generic_scan(data.player.x, data.player.y, x, y, plot_scan);
 		}
 	}
 	data.map_buffer[data.player.y * MAP_WIDTH + data.player.x] = SF_PLAYER;
@@ -411,26 +432,54 @@ static void print_status(void)
  * ============
  */
 
-static enum move_result game_move_player(int dx, int dy)
+static enum move_result try_move(int new_x, int new_y)
 {
-	int new_x = data.player.x + dx;
-	int new_y = data.player.y + dy;
-
 	int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
 
 	bool obstacle = new_field == SF_ASTEROID;
 	bool enemy = (new_field >= '0' && new_field <= '9');
+	bool player = (new_x == data.player.x && new_y == data.player.y);
 	bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
 				   new_y < 0 || new_y >= MAP_HEIGHT;
 
 	if (obstacle || outside) {
 		return MR_BLOCK;
-	} else if (enemy) {
+	} else if (enemy || player) {
 		return MR_SHIP;
 	} else {
+		return MR_CLEAR;
+	}
+}
+
+static void game_move_player(int dx, int dy)
+{
+	int new_x = data.player.x + dx;
+	int new_y = data.player.y + dy;
+
+	switch (try_move(new_x, new_y)) {
+	case MR_CLEAR:
 		data.player.x = new_x;
 		data.player.y = new_y;
-		return MR_CLEAR;
+	case MR_BLOCK:
+		break;
+	case MR_SHIP:
+		data.player.health = 0.0;
+		break;
+	}
+}
+
+static void game_move_enemy(int index, int dx, int dy)
+{
+	int new_x = data.enemies[index].x + dx;
+	int new_y = data.enemies[index].y + dy;
+
+	switch (try_move(new_x, new_y)) {
+	case MR_CLEAR:
+		data.enemies[index].x = new_x;
+		data.enemies[index].y = new_y;
+	case MR_BLOCK:
+	case MR_SHIP:
+		break;
 	}
 }
 
@@ -440,9 +489,14 @@ static void game_hit_enemy(int index)
 	--data.enemies_count;
 }
 
+static void game_hit_player(void)
+{
+	data.player.health = 100.0;
+}
+
 static bool game_fire_laser(void)
 {
-	int target = - 1, hit = -1;
+	int target = - 1, hit = -1, scan_result = -1;
 	int x, y;
 
 	if (data.enemies_count == 0) {
@@ -457,70 +511,112 @@ static bool game_fire_laser(void)
 
 	x = data.enemies[target].x;
 	y = data.enemies[target].y;
-	hit = generic_scan(data.player.x, data.player.y, x, y, attack_scan);
+	scan_result = generic_scan(data.player.x, data.player.y, x, y, visibility_scan);
+	hit = scan_result - 1;
 
-    if (hit == 0) {
+    if (scan_result == 0) {
         printf("Nothing hit.\n");
         return false;
 
-    } else if (hit == -1) {
+    } else if (scan_result == FAKE_ASTEROID_INDEX) {
 		printf("Obstacle hit.\n");
 		return false;
 
-	} else if ((hit - 1) == target) {
+	} else if (scan_result == FAKE_PLAYER_INDEX) {
+		printf("Player hit player - this shouldn't happen.\n");
+		exit(1);
+		return false;
+	} else if (hit == target) {
 		printf("Target hit.\n");
-		game_hit_enemy(hit - 1);
+		game_hit_enemy(hit);
 		return true;
 
 	} else {
 		printf("Another one hit.\n");
-		game_hit_enemy(hit - 1);
+		game_hit_enemy(hit);
 		return true;
 	}
 }
 
-static void game_enemy_turn(void)
+static void game_enemy_idle(int index)
 {
+	int px = data.player.x;
+	int py = data.player.y;
+	int ex = data.enemies[index].x;
+	int ey = data.enemies[index].y;
+
+	int dx, dy;
+
+	// Visibility test.
+	int scan_result = generic_scan(ex, ey, px, py, visibility_scan);
+	if (scan_result == FAKE_PLAYER_INDEX) {
+		game_hit_player();
+		data.enemies[index].behavior = EB_HUNT;
+		return;
+	}
+
+	// Move cluelessly.
+	dx = XENO_rand_range(0, 2) - 1;
+	dy = XENO_rand_range(0, 2) - 1;
+	game_move_enemy(index, dx, dy);
+}
+
+static void game_enemy_hunt()
+{
+}
+
+static void game_enemy_turn(int index)
+{
+	switch (data.enemies[index].behavior) {
+	case EB_IDLE:
+		game_enemy_idle(index);
+		break;
+	case EB_HUNT:
+		game_enemy_hunt(index);
+		break;
+	}
 }
 
 static void game_loop(void)
 {
-	int c = 0;
-	enum move_result mr;
+	int c = 0, i;
 	bool fr;
 
 	print_status();
 	while ((c = XENO_getch()) != 'q') {
 		switch (c) {
 		case 'h':
-			mr = game_move_player(-1, 0);
+			game_move_player(-1, 0);
 			break;
 		case 'j':
-			mr = game_move_player(0, 1);
+			game_move_player(0, 1);
 			break;
 		case 'k':
-			mr = game_move_player(0, -1);
+			game_move_player(0, -1);
 			break;
 		case 'l':
-			mr = game_move_player(1, 0);
+			game_move_player(1, 0);
 			break;
 		case 'L':
 			fr = game_fire_laser();
+			printf("Attack %s!\n", fr ? "success" : "failure");
 			break;
 		default:
 			break;
 		}
-
-		game_enemy_turn();
 
 		if (data.enemies_count == 0) {
 			printf("You are awesome!\n");
 			break;
 		}
 
-		if (mr == MR_SHIP) {
+		if (data.player.health <= 0.0) {
 			printf("You failed!\n");
 			break;
+		}
+
+		for (i = 0; i < data.enemies_count; ++i) {
+			game_enemy_turn(i);
 		}
 
 		print_status();
