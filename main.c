@@ -56,8 +56,6 @@ enum enemy_behavior {
 	EB_HUNT
 };
 
-// Additional content to enforce commit.
-
 static struct {
 
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
@@ -66,6 +64,9 @@ static struct {
 	struct {
 		int x, y;
 		enum enemy_behavior behavior;
+		int *hunt_path;
+		int hunt_path_length;
+		int hunt_path_step;
 	} enemies[ENEMIES_MAX];
 	int enemies_count;
 
@@ -78,9 +79,15 @@ static struct {
 
 } data;
 
+static struct {
+	int pred_map[MAP_WIDTH * MAP_HEIGHT];
+	bool close_map[MAP_WIDTH * MAP_HEIGHT];
+	double cost_map[MAP_WIDTH * MAP_HEIGHT];
+} relax;
+
 /*
- * Xeno code.
- * ==========
+ * Xeno code (copied from the internetz).
+ * ======================================
  */
 
 static int XENO_getch(void)
@@ -98,10 +105,10 @@ static int XENO_getch(void)
 
 static int XENO_rand_range(unsigned min, unsigned max)
 {
-	int base_random = rand();
-	int range = max - min;
-	int remainder = RAND_MAX % range;
-	int bucket = RAND_MAX / range;
+	const int base_random = rand();
+	const int range = max - min;
+	const int remainder = RAND_MAX % range;
+	const int bucket = RAND_MAX / range;
 
 	if (RAND_MAX == base_random) {
 		return XENO_rand_range(min, max);
@@ -182,8 +189,8 @@ static void data_init_asteroids(void)
 static void data_init_enemies(void)
 {
 	int i;
-	data.enemies_count = 0;
 	int new_count = XENO_rand_range(ENEMIES_MIN, ENEMIES_MAX);
+	data.enemies_count = 0;
 	for (i = 0; i < new_count; ++i) {
 		if (!data_find_empty_field(
 				MAX_RANDOM_SEEKS,
@@ -193,6 +200,9 @@ static void data_init_enemies(void)
 			exit(1);
 		}
 		data.enemies[i].behavior = EB_IDLE;
+		data.enemies[i].hunt_path = NULL;
+		data.enemies[i].hunt_path_length = 0;
+		data.enemies[i].hunt_path_step = 0;
 		++(data.enemies_count);
 	}
 }
@@ -320,7 +330,8 @@ static int plot_scan(int x, int y)
   * @param x The x coordinate of the scanned point.
   * @param y The y coordinate of the scanned point.
   * @return 0 if nothing was hit,
-  *         -1 if asteroid was hit,
+  *         FAKE_ASTEROID_INDEX if asteroid was hit,
+  *         FAKE_PLAYER_INDEX if player was hit,
   *         index of enemy + 1 if an enemy was hit.
   */
 static int visibility_scan(int x, int y)
@@ -359,8 +370,7 @@ static void plot_fog(void)
 		if (data.map_buffer[i] == SF_SPACE ||
 			data.map_buffer[i] == SF_PLAYER ||
 			(data.map_buffer[i] >= '0' && data.map_buffer[i] <= '9')) {
-
-			data.map_buffer[i] = SF_FOG;
+				data.map_buffer[i] = SF_FOG;
 		}
 	}
 }
@@ -374,6 +384,10 @@ static void plot_map(void)
 		}
 	}
 	data.map_buffer[data.player.y * MAP_WIDTH + data.player.x] = SF_PLAYER;
+}
+
+static void plot_paths(void)
+{
 }
 
 /*
@@ -419,6 +433,7 @@ static void print_status(void)
 
 	plot_fog();
 	plot_map();
+	plot_paths();
 
 	PRINT_HR(MAP_WIDTH);
 	for (i = 0; i < MAP_HEIGHT; ++i) {
@@ -432,14 +447,123 @@ static void print_status(void)
  * ============
  */
 
-static enum move_result try_move(int new_x, int new_y)
+static void game_set_hunt_path_INIT(int source)
 {
-	int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
+	int i;
+	for (i = 0; i < MAP_WIDTH * MAP_HEIGHT; ++i) {
+		relax.pred_map[i] = i;
+		relax.close_map[i] = false;
+		relax.cost_map[i] = INFINITY;
+	}
 
-	bool obstacle = new_field == SF_ASTEROID;
-	bool enemy = (new_field >= '0' && new_field <= '9');
-	bool player = (new_x == data.player.x && new_y == data.player.y);
-	bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
+	relax.cost_map[source] = 0;
+}
+
+static int game_set_hunt_path_CHEAPEST(void)
+{
+	int i, cheap = -1;
+	double cheap_cost = INFINITY;
+	for (i = 0; i < MAP_WIDTH * MAP_HEIGHT; ++i) {
+		if (relax.close_map[i] == false &&
+			relax.cost_map[i] < cheap_cost) {
+				cheap_cost = relax.cost_map[i];
+				cheap = i;
+		}
+	}
+	return cheap;
+}
+
+static void game_set_hunt_path_RELAX(int x1, int y1, int x2, int y2)
+{
+	const int src = y1 * MAP_WIDTH + x1;
+	const int dst = y2 * MAP_WIDTH + x2;
+	const double src_cost = relax.cost_map[src];
+	const double dst_cost = relax.cost_map[dst];
+
+	if ((src_cost + 1.0) < dst_cost) {
+		relax.cost_map[dst] = src_cost + 1.0;
+		relax.pred_map[dst] = src;
+	}
+}
+
+static void game_set_hunt_path_BUILD(int index)
+{
+	const int src = data.enemies[index].y * MAP_WIDTH + data.enemies[index].x;
+	const int dst = data.player.y * MAP_WIDTH + data.player.x;
+	int path_length = 0;
+	int write_index = 0;
+	int cur = src;
+	
+	while (cur != dst) {
+		++path_length;
+		cur = relax.pred_map[cur];
+	}
+	++path_length;
+
+	data.enemies[index].hunt_path_length = path_length;
+	data.enemies[index].hunt_path = malloc(
+			path_length * sizeof(*data.enemies[index].hunt_path));
+
+	cur = src;
+	while (cur != dst) {
+		data.enemies[index].hunt_path[write_index++] = cur;
+		cur = relax.pred_map[cur];
+	}
+	data.enemies[index].hunt_path[write_index++] = cur;
+
+	data.enemies[index].hunt_path_step = 0;
+}
+
+static void game_set_hunt_path(int index)
+{
+	const int px = data.player.x;
+	const int py = data.player.y;
+	const int ex = data.enemies[index].x;
+	const int ey = data.enemies[index].y;
+	const int src = py * MAP_WIDTH + px;
+	const int dst = ey * MAP_WIDTH + ex;
+	int cur, cur_x, cur_y;
+
+	game_set_hunt_path_INIT(src);
+
+	cur = src;
+	cur_x = ex;
+	cur_y = ey;
+
+	while (cur != dst) {
+
+		cur = game_set_hunt_path_CHEAPEST();
+
+		cur_x = cur % MAP_WIDTH;
+		cur_y = cur / MAP_WIDTH;
+
+		if (cur_x> 0) {
+			game_set_hunt_path_RELAX(cur_x, cur_y, cur_x - 1, cur_y);
+		}
+		if (cur_x < (MAP_WIDTH - 1)) {
+			game_set_hunt_path_RELAX(cur_x, cur_y, cur_x + 1, cur_y);
+		}
+		if (cur_y > 0) {
+			game_set_hunt_path_RELAX(cur_x, cur_y, cur_x, cur_y - 1);
+		}
+		if (cur_y < (MAP_HEIGHT - 1)) {
+			game_set_hunt_path_RELAX(cur_x, cur_y, cur_x, cur_y + 1);
+		}
+
+		relax.close_map[cur] = true;
+	}
+
+	game_set_hunt_path_BUILD(index);
+}
+
+static enum move_result game_try_move(int new_x, int new_y)
+{
+	const int new_field = data.map_buffer[new_y * MAP_WIDTH + new_x];
+
+	const bool obstacle = new_field == SF_ASTEROID;
+	const bool enemy = (new_field >= '0' && new_field <= '9');
+	const bool player = (new_x == data.player.x && new_y == data.player.y);
+	const bool outside = new_x < 0 || new_x >= MAP_WIDTH ||
 				   new_y < 0 || new_y >= MAP_HEIGHT;
 
 	if (obstacle || outside) {
@@ -453,13 +577,14 @@ static enum move_result try_move(int new_x, int new_y)
 
 static void game_move_player(int dx, int dy)
 {
-	int new_x = data.player.x + dx;
-	int new_y = data.player.y + dy;
+	const int new_x = data.player.x + dx;
+	const int new_y = data.player.y + dy;
 
-	switch (try_move(new_x, new_y)) {
+	switch (game_try_move(new_x, new_y)) {
 	case MR_CLEAR:
 		data.player.x = new_x;
 		data.player.y = new_y;
+		/* Intentional fall-through! */
 	case MR_BLOCK:
 		break;
 	case MR_SHIP:
@@ -470,13 +595,14 @@ static void game_move_player(int dx, int dy)
 
 static void game_move_enemy(int index, int dx, int dy)
 {
-	int new_x = data.enemies[index].x + dx;
-	int new_y = data.enemies[index].y + dy;
+	const int new_x = data.enemies[index].x + dx;
+	const int new_y = data.enemies[index].y + dy;
 
-	switch (try_move(new_x, new_y)) {
+	switch (game_try_move(new_x, new_y)) {
 	case MR_CLEAR:
 		data.enemies[index].x = new_x;
 		data.enemies[index].y = new_y;
+		/* Intentional fall-through! */
 	case MR_BLOCK:
 	case MR_SHIP:
 		break;
@@ -525,7 +651,6 @@ static bool game_fire_laser(void)
 	} else if (scan_result == FAKE_PLAYER_INDEX) {
 		printf("Player hit player - this shouldn't happen.\n");
 		exit(1);
-		return false;
 	} else if (hit == target) {
 		printf("Target hit.\n");
 		game_hit_enemy(hit);
@@ -540,29 +665,34 @@ static bool game_fire_laser(void)
 
 static void game_enemy_idle(int index)
 {
-	int px = data.player.x;
-	int py = data.player.y;
-	int ex = data.enemies[index].x;
-	int ey = data.enemies[index].y;
-
 	int dx, dy;
+	int scan_result;
+	const int px = data.player.x;
+	const int py = data.player.y;
+	const int ex = data.enemies[index].x;
+	const int ey = data.enemies[index].y;
+	
+	scan_result = generic_scan(ex, ey, px, py, visibility_scan);
 
-	// Visibility test.
-	int scan_result = generic_scan(ex, ey, px, py, visibility_scan);
 	if (scan_result == FAKE_PLAYER_INDEX) {
-		game_hit_player();
+		// Atack and begin hunt.
 		data.enemies[index].behavior = EB_HUNT;
-		return;
+		game_set_hunt_path(index);
+		game_hit_player();
+	} else {
+		// Move cluelessly.
+		dx = XENO_rand_range(0, 2) - 1;
+		dy = XENO_rand_range(0, 2) - 1;
+		game_move_enemy(index, dx, dy);
 	}
-
-	// Move cluelessly.
-	dx = XENO_rand_range(0, 2) - 1;
-	dy = XENO_rand_range(0, 2) - 1;
-	game_move_enemy(index, dx, dy);
 }
 
 static void game_enemy_hunt()
 {
+	/* 1. if player spotted : shoot
+	 * 2. else set new hunt path and follow it.
+	 * 3. If at the end of the hunt path - goto IDLE sate
+	 */
 }
 
 static void game_enemy_turn(int index)
@@ -633,3 +763,4 @@ int main()
 
 	return 0;
 }
+
