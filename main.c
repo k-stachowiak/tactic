@@ -56,8 +56,6 @@ enum enemy_behavior {
 	EB_HUNT
 };
 
-// Additional content to enforce commit.
-
 static struct {
 
 	struct { int x1, y1, x2, y2; } asteroids[ASTEROIDS_MAX];
@@ -66,6 +64,8 @@ static struct {
 	struct {
 		int x, y;
 		enum enemy_behavior behavior;
+		struct { int x, y; } *hunt_path;
+		int hunt_path_length;
 	} enemies[ENEMIES_MAX];
 	int enemies_count;
 
@@ -193,6 +193,8 @@ static void data_init_enemies(void)
 			exit(1);
 		}
 		data.enemies[i].behavior = EB_IDLE;
+		data.enemies[i].hunt_path = NULL;
+		data.enemies[i].hunt_path_length = 0;
 		++(data.enemies_count);
 	}
 }
@@ -540,29 +542,34 @@ static bool game_fire_laser(void)
 
 static void game_enemy_idle(int index)
 {
+	int dx, dy;
+	int scan_result;
 	int px = data.player.x;
 	int py = data.player.y;
 	int ex = data.enemies[index].x;
 	int ey = data.enemies[index].y;
+	
+	scan_result = generic_scan(ex, ey, px, py, visibility_scan);
 
-	int dx, dy;
-
-	// Visibility test.
-	int scan_result = generic_scan(ex, ey, px, py, visibility_scan);
 	if (scan_result == FAKE_PLAYER_INDEX) {
-		game_hit_player();
+		// Atack and begin hunt.
 		data.enemies[index].behavior = EB_HUNT;
-		return;
+		/* TODO: implement and uncomment: game_enemy_set_hunt_path(index); */
+		game_hit_player();
+	} else {
+		// Move cluelessly.
+		dx = XENO_rand_range(0, 2) - 1;
+		dy = XENO_rand_range(0, 2) - 1;
+		game_move_enemy(index, dx, dy);
 	}
-
-	// Move cluelessly.
-	dx = XENO_rand_range(0, 2) - 1;
-	dy = XENO_rand_range(0, 2) - 1;
-	game_move_enemy(index, dx, dy);
 }
 
 static void game_enemy_hunt()
 {
+	/* 1. if player spotted : shoot
+	 * 2. else set new hunt path and follow it.
+	 * 3. If at the end of the hunt path - goto IDLE sate
+	 */
 }
 
 static void game_enemy_turn(int index)
