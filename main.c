@@ -25,8 +25,8 @@
 #	error Map side too small!
 #endif
 
-#define MIN(x, y) ((x) < (y) ? (x) : (y))
-#define MAX(x, y) ((x) > (y) ? (x) : (y))
+#define MIN(MACRO_x, MACRO_y) ((MACRO_x) < (MACRO_y) ? (MACRO_x) : (MACRO_y))
+#define MAX(MACRO_x, MACRO_y) ((MACRO_x) > (MACRO_y) ? (MACRO_x) : (MACRO_y))
 
 #define PRINT_HR(MACRO_width)\
 	do {\
@@ -42,7 +42,8 @@ enum scan_field {
 	SF_SPACE = ' ',
 	SF_FOG = '.',
 	SF_ASTEROID = '#',
-	SF_PLAYER = '*'
+	SF_PLAYER = '*',
+	SF_PATH = '`'
 };
 
 enum move_result {
@@ -388,6 +389,13 @@ static void plot_map(void)
 
 static void plot_paths(void)
 {
+	int e, i;
+	for (e = 0; e < data.enemies_count; ++e) {
+		for (i = 0; i < data.enemies[e].hunt_path_length; ++i) {
+			int step = data.enemies[e].hunt_path[i];
+			data.map_buffer[step] = SF_PATH;
+		}
+	}
 }
 
 /*
@@ -432,8 +440,8 @@ static void print_status(void)
 	printf("\n");
 
 	plot_fog();
-	plot_map();
 	plot_paths();
+	plot_map();
 
 	PRINT_HR(MAP_WIDTH);
 	for (i = 0; i < MAP_HEIGHT; ++i) {
